@@ -1,0 +1,55 @@
+;; TODO Troubleshooting and explainers:
+;; - provide a better fix for the ssh-key problem
+;; - ! (nrepl-use-ssh-fallback-for-remote-hosts t) has to be t
+;; - vterm will fail with /usr/bin/bash, there's only /bin/bash
+;; - explain unsafe autosafe names
+;; - ! message how to connect
+;; - ! password? and fingerprint?
+;; - check if already running and stop it
+
+{:paths ["."]
+ :tasks
+ {build   {:depends [-dockerfile]
+           :task    (bash "docker build -t {{container/name}} ./{{project/dir}}")}
+  start   {:depends [build]
+           :task
+           (do (echo "\n--------------------------------------------------------------------------------\n"
+                     "Get started:\n"
+                     "  (1) M-x find-file \"ssh:/root@localhost#{{container/ssh-port}}:/usr/src/app/src/foo.clj\""
+                     "  (2) Accept the host key [on xfirst run only]"
+                     "  (3) Enter password: \"cider\""
+                     "  (4) M-x cider-jack-in-clj"
+                     "\n--------------------------------------------------------------------------------\n")
+               (bash "docker run -p {{container/ssh-port}}:22 {{container/name}}"))}
+  stop    (bash "docker stop $(docker ps --quiet --filter ancestor={{container/name}}) || exit 0")
+  cleanup {:depends [stop -remove-from-known-hosts]
+           :task    (bash "docker remove `(docker ps --all --quiet --filter ancestor={{container/name}})`")}
+  list    (bash "docker ps --filter ancestor={{container/name}}")
+
+  -remove-from-known-hosts (bash "ssh-keygen -R \"[localhost]:{{container/ssh-port}}\"")
+  ;; TODO stop if already running
+  
+  -dockerfile (spit (str (:project/dir target) "Dockerfile") (selmer/render-file "Dockerfile.template" target))
+  -makefile   (spit (str (:project/dir target) "Makefile") (selmer/render-file "Makefile.template" target))
+  
+  :init
+  (do (def config
+        {:lein       {:project/dir        "lein-app/"
+                      :project/init-cmd   "lein deps" 
+                      :container/ssh-port "8022"
+                      :container/name     "cider-tramp-dev-lein"
+                      :container/parent   "clojure:temurin-17-lein-bullseye"}
+         :tools-deps {:project/dir        "tools-deps-app/"
+                      :project/init-cmd   "clojure -P"
+                      :container/ssh-port "9022"
+                      :container/name     "cider-tramp-dev-tools-deps"
+                      :container/parent   "clojure:temurin-17-tools-deps-bullseye"}})
+      
+      (def target (config (or (keyword (first *command-line-args*)) :tools-deps)))
+      (defn bash [s] (shell (str "bash -c '" (selmer/render s target) "'")))
+      (defn echo [& lines] (println (selmer/render (str/join "\n" lines) target)))
+      ;; Print the shell-command that's executed. From https://clojurians.slack.com/archives/CLX41ASCS/p1693517240805539?thread_ts=1693515381.686759&cid=CLX41ASCS
+      (alter-var-root (var babashka.process/*defaults*) assoc :pre-start-fn (fn [m] (apply println ">" (:cmd m)))))
+  :leave    (println "Finished task:" (:name (current-task)))
+  :requires ([selmer.parser :as selmer]
+             [clojure.string :as str])}}
